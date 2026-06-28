@@ -33,6 +33,12 @@ Irigasi Pintar adalah sistem penyiram tanaman otomatis berbasis ESP32 yang dapat
   - **Otomatis** — pompa mengikuti pembacaan sensor
 - Strip indikator mode aktif (hijau = auto, biru = manual ON, merah = manual OFF)
 
+  ### Level Air Tangki
+- Ilustrasi tangki yang terisi secara proporsional sesuai level air aktual
+- Badge status kondisi tangki: **KOSONG / SEDANG / PENUH**
+- Progress bar horizontal dengan tiga titik acuan: Kosong, Sedang, Penuh
+- Timestamp update terakhir
+  
 ### Grafik riwayat
 - Grafik garis kelembapan hingga 60 titik data terakhir
 - Overlay status pompa ON/OFF pada sumbu kedua
