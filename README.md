@@ -50,7 +50,8 @@ Irigasi Pintar adalah sistem penyiram tanaman otomatis berbasis ESP32 yang dapat
 - Mendukung koneksi **WSS** (port 443) maupun **WS** (port 9001)
 - Kompatibel dengan Shiftr.io dan Mosquitto lokal
 
-<img width="959" height="563" alt="image" src="https://github.com/user-attachments/assets/03dce010-d1c3-4d8e-b156-93c180c448f2" />
+<img width="959" height="562" alt="image" src="https://github.com/user-attachments/assets/49d05b83-7a9b-4a26-ae29-41e73ea1f395" />
+
 
 ---
 
