@@ -1,0 +1,1193 @@
+<!DOCTYPE html>
+<html lang="id">
+
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Irigasi Pintar — Dashboard</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/mqtt/5.3.0/mqtt.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+  <style>
+    :root {
+      --soil: #3d2b1f;
+      --leaf: #4a7c59;
+      --water: #3a86c8;
+      --dry: #c0622a;
+      --bg: #f5f0eb;
+      --card: #ffffff;
+      --border: #e0d8d0;
+      --text: #2a1f18;
+      --muted: #7a6a5e;
+      --radius: 12px;
+      --shadow: 0 2px 12px rgba(61, 43, 31, .10);
+    }
+
+    *,
+    *::before,
+    *::after {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    body {
+      font-family: 'Segoe UI', system-ui, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+    }
+
+    /* ── HEADER ─────────────────────────────── */
+    header {
+      background: var(--soil);
+      color: #fff;
+      padding: 0 24px;
+      height: 64px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+    }
+
+    .header-left {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+
+    .header-logo {
+      width: 38px;
+      height: 38px;
+      background: var(--leaf);
+      border-radius: 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 18px;
+      flex-shrink: 0;
+    }
+
+    .header-title h1 {
+      font-size: 1.05rem;
+      font-weight: 700;
+    }
+
+    .header-title p {
+      font-size: .72rem;
+      color: #c8bdb5;
+      margin-top: 1px;
+    }
+
+    /* ── STATUS BAR (di bawah header) ──────── */
+    .status-bar {
+      background: #2e1f14;
+      padding: 0 24px;
+      height: 40px;
+      display: flex;
+      align-items: center;
+      gap: 20px;
+      font-size: .78rem;
+      border-bottom: 1px solid rgba(255, 255, 255, .06);
+    }
+
+    .sb-item {
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      color: #a89585;
+    }
+
+    .sb-item strong {
+      color: #fff;
+    }
+
+    /* LED indikator */
+    .led {
+      width: 9px;
+      height: 9px;
+      border-radius: 50%;
+      flex-shrink: 0;
+      transition: background .4s, box-shadow .4s;
+    }
+
+    /* WiFi */
+    .led-wifi.off {
+      background: #555;
+    }
+
+    .led-wifi.on {
+      background: #4caf50;
+      box-shadow: 0 0 7px #4caf50;
+    }
+
+    /* MQTT broker */
+    .led-broker.off {
+      background: #555;
+    }
+
+    .led-broker.on {
+      background: #ff9800;
+      box-shadow: 0 0 7px #ff9800;
+    }
+
+    /* ESP32 (data diterima) */
+    .led-esp.off {
+      background: #555;
+    }
+
+    .led-esp.on {
+      background: #3a86c8;
+      box-shadow: 0 0 7px #3a86c8;
+    }
+
+    .led-esp.pulse {
+      animation: ledpulse 1s ease-out;
+    }
+
+    @keyframes ledpulse {
+      0% {
+        box-shadow: 0 0 0 0 rgba(58, 134, 200, .8)
+      }
+
+      100% {
+        box-shadow: 0 0 0 10px rgba(58, 134, 200, 0)
+      }
+    }
+
+    /* conn badge kanan header */
+    .conn-badge {
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      background: rgba(255, 255, 255, .10);
+      border: 1px solid rgba(255, 255, 255, .15);
+      border-radius: 20px;
+      padding: 6px 14px;
+      font-size: .8rem;
+      cursor: pointer;
+      transition: background .2s;
+      white-space: nowrap;
+    }
+
+    .conn-badge:hover {
+      background: rgba(255, 255, 255, .18);
+    }
+
+    @keyframes blink {
+
+      0%,
+      100% {
+        opacity: 1
+      }
+
+      50% {
+        opacity: .3
+      }
+    }
+
+    /* ── LAYOUT ─────────────────────────────── */
+    main {
+      max-width: 1100px;
+      margin: 0 auto;
+      padding: 22px 20px;
+      display: grid;
+      gap: 18px;
+      grid-template-columns: 1fr 1fr;
+      grid-template-areas: "moisture pump" "chart chart";
+    }
+
+    @media(max-width:660px) {
+      main {
+        grid-template-columns: 1fr;
+        grid-template-areas: "moisture" "pump" "chart";
+      }
+    }
+
+    /* ── CARD ───────────────────────────────── */
+    .card {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 20px;
+      box-shadow: var(--shadow);
+    }
+
+    .card-label {
+      font-size: .7rem;
+      font-weight: 700;
+      letter-spacing: .10em;
+      text-transform: uppercase;
+      color: var(--muted);
+      margin-bottom: 14px;
+    }
+
+    /* ── MOISTURE CARD ──────────────────────── */
+    #card-moisture {
+      grid-area: moisture;
+    }
+
+    .moisture-main {
+      display: flex;
+      align-items: center;
+      gap: 18px;
+      margin-bottom: 16px;
+    }
+
+    .gauge-wrap {
+      position: relative;
+      width: 106px;
+      height: 106px;
+      flex-shrink: 0;
+    }
+
+    .gauge-wrap svg {
+      width: 100%;
+      height: 100%;
+    }
+
+    .gauge-track {
+      fill: none;
+      stroke: var(--border);
+      stroke-width: 9;
+    }
+
+    .gauge-fill {
+      fill: none;
+      stroke: var(--leaf);
+      stroke-width: 9;
+      stroke-linecap: round;
+      stroke-dasharray: 251.2;
+      stroke-dashoffset: 251.2;
+      transform: rotate(-90deg);
+      transform-origin: center;
+      transition: stroke-dashoffset .8s ease, stroke .5s;
+    }
+
+    .gauge-text {
+      position: absolute;
+      inset: 0;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .gauge-pct {
+      font-size: 1.5rem;
+      font-weight: 800;
+      line-height: 1;
+    }
+
+    .gauge-unit {
+      font-size: .68rem;
+      color: var(--muted);
+      margin-top: 2px;
+    }
+
+    .moisture-adc {
+      font-size: .8rem;
+      color: var(--muted);
+      margin-bottom: 7px;
+    }
+
+    .soil-badge {
+      display: inline-block;
+      padding: 4px 12px;
+      border-radius: 20px;
+      font-size: .76rem;
+      font-weight: 700;
+    }
+
+    .soil-badge.basah {
+      background: #e3f2fd;
+      color: var(--water);
+    }
+
+    .soil-badge.lembab {
+      background: #e8f5e9;
+      color: #2e7d32;
+    }
+
+    .soil-badge.kering {
+      background: #fbe9e7;
+      color: var(--dry);
+    }
+
+    .bar-wrap {
+      height: 8px;
+      background: var(--border);
+      border-radius: 99px;
+      overflow: hidden;
+    }
+
+    .bar-fill {
+      height: 100%;
+      background: linear-gradient(90deg, var(--dry), var(--leaf), var(--water));
+      border-radius: 99px;
+      width: 0%;
+      transition: width .8s ease;
+    }
+
+    .bar-labels {
+      display: flex;
+      justify-content: space-between;
+      font-size: .66rem;
+      color: var(--muted);
+      margin-top: 4px;
+    }
+
+    .last-update {
+      font-size: .7rem;
+      color: var(--muted);
+      margin-top: 10px;
+      text-align: right;
+    }
+
+    /* ── PUMP CARD ──────────────────────────── */
+    #card-pump {
+      grid-area: pump;
+    }
+
+    .mode-strip {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 12px;
+      border-radius: 8px;
+      margin-bottom: 14px;
+      font-size: .8rem;
+      font-weight: 600;
+      transition: background .3s, color .3s;
+    }
+
+    .mode-strip.auto {
+      background: #e8f5e9;
+      color: #2e7d32;
+    }
+
+    .mode-strip.man-on {
+      background: #e3f2fd;
+      color: var(--water);
+    }
+
+    .mode-strip.man-off {
+      background: #fbe9e7;
+      color: var(--dry);
+    }
+
+    .mode-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      flex-shrink: 0;
+    }
+
+    .mode-strip.auto .mode-dot {
+      background: #4caf50;
+    }
+
+    .mode-strip.man-on .mode-dot {
+      background: var(--water);
+    }
+
+    .mode-strip.man-off .mode-dot {
+      background: var(--dry);
+    }
+
+    .pump-status {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      margin-bottom: 14px;
+    }
+
+    .pump-icon {
+      width: 54px;
+      height: 54px;
+      border-radius: 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 23px;
+      background: var(--border);
+      transition: background .4s;
+    }
+
+    .pump-icon.on {
+      background: #e3f2fd;
+      animation: pulseblue 2s infinite;
+    }
+
+    @keyframes pulseblue {
+
+      0%,
+      100% {
+        box-shadow: 0 0 0 0 rgba(58, 134, 200, .4)
+      }
+
+      50% {
+        box-shadow: 0 0 0 10px rgba(58, 134, 200, 0)
+      }
+    }
+
+    .pump-state-label {
+      font-size: 1.3rem;
+      font-weight: 800;
+      line-height: 1;
+    }
+
+    .pump-state-label.on {
+      color: var(--water);
+    }
+
+    .pump-state-label.off {
+      color: var(--muted);
+    }
+
+    .pump-timer {
+      font-size: .76rem;
+      color: var(--muted);
+      margin-top: 3px;
+    }
+
+    .pump-controls {
+      display: flex;
+      gap: 10px;
+    }
+
+    .btn {
+      flex: 1;
+      padding: 11px 0;
+      border: none;
+      border-radius: 8px;
+      font-size: .86rem;
+      font-weight: 700;
+      cursor: pointer;
+      transition: opacity .15s, transform .1s;
+    }
+
+    .btn:hover {
+      opacity: .88;
+    }
+
+    .btn:active {
+      transform: scale(.97);
+    }
+
+    .btn:disabled {
+      opacity: .4;
+      cursor: not-allowed;
+      transform: none;
+    }
+
+    .btn-on {
+      background: var(--water);
+      color: #fff;
+    }
+
+    .btn-off {
+      background: var(--dry);
+      color: #fff;
+    }
+
+    .btn-auto {
+      background: var(--leaf);
+      color: #fff;
+    }
+
+    .pump-hint {
+      font-size: .7rem;
+      color: var(--muted);
+      margin-top: 10px;
+      line-height: 1.55;
+    }
+
+    /* ── CHART CARD ─────────────────────────── */
+    #card-chart {
+      grid-area: chart;
+    }
+
+    .chart-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 14px;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+
+    .chart-legend {
+      display: flex;
+      gap: 14px;
+    }
+
+    .legend-item {
+      display: flex;
+      align-items: center;
+      gap: 5px;
+      font-size: .73rem;
+      color: var(--muted);
+    }
+
+    .legend-dot {
+      width: 9px;
+      height: 9px;
+      border-radius: 50%;
+    }
+
+    .btn-clear {
+      background: none;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 4px 10px;
+      font-size: .73rem;
+      color: var(--muted);
+      cursor: pointer;
+    }
+
+    .btn-clear:hover {
+      border-color: var(--dry);
+      color: var(--dry);
+    }
+
+    /* ── TOAST ──────────────────────────────── */
+    #toast {
+      position: fixed;
+      bottom: 22px;
+      right: 22px;
+      background: var(--soil);
+      color: #fff;
+      padding: 11px 18px;
+      border-radius: 8px;
+      font-size: .83rem;
+      font-weight: 600;
+      box-shadow: 0 4px 16px rgba(0, 0, 0, .25);
+      opacity: 0;
+      transform: translateY(10px);
+      transition: opacity .25s, transform .25s;
+      pointer-events: none;
+      z-index: 999;
+      max-width: 290px;
+    }
+
+    #toast.show {
+      opacity: 1;
+      transform: translateY(0);
+    }
+
+    /* ── MODAL ──────────────────────────────── */
+    .modal-overlay {
+      display: none;
+      position: fixed;
+      inset: 0;
+      background: rgba(0, 0, 0, .45);
+      z-index: 100;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .modal-overlay.open {
+      display: flex;
+    }
+
+    .modal {
+      background: var(--card);
+      border-radius: var(--radius);
+      padding: 26px;
+      width: min(460px, 92vw);
+      box-shadow: 0 8px 40px rgba(0, 0, 0, .25);
+    }
+
+    .modal h2 {
+      font-size: 1.05rem;
+      margin-bottom: 16px;
+    }
+
+    .modal-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 11px;
+      margin-bottom: 16px;
+    }
+
+    .modal-grid .field.full {
+      grid-column: 1/-1;
+    }
+
+    .field label {
+      display: block;
+      font-size: .72rem;
+      font-weight: 700;
+      color: var(--muted);
+      margin-bottom: 5px;
+      text-transform: uppercase;
+      letter-spacing: .06em;
+    }
+
+    .field input {
+      width: 100%;
+      padding: 9px 11px;
+      border: 1.5px solid var(--border);
+      border-radius: 8px;
+      font-size: .88rem;
+      color: var(--text);
+      background: var(--bg);
+      outline: none;
+      transition: border-color .2s;
+    }
+
+    .field input:focus {
+      border-color: var(--leaf);
+    }
+
+    .info-box {
+      background: var(--bg);
+      padding: 10px;
+      border-radius: 8px;
+      font-size: .74rem;
+      color: var(--muted);
+      line-height: 1.6;
+      margin-bottom: 14px;
+    }
+
+    .modal-actions {
+      display: flex;
+      gap: 10px;
+      justify-content: flex-end;
+    }
+
+    .btn-cancel {
+      background: none;
+      border: 1.5px solid var(--border);
+      border-radius: 8px;
+      padding: 9px 18px;
+      font-size: .85rem;
+      font-weight: 600;
+      cursor: pointer;
+      color: var(--muted);
+    }
+
+    .btn-cancel:hover {
+      border-color: var(--soil);
+      color: var(--soil);
+    }
+
+    .btn-send {
+      background: var(--soil);
+      color: #fff;
+      padding: 9px 22px;
+      border: none;
+      border-radius: 8px;
+      font-size: .85rem;
+      font-weight: 700;
+      cursor: pointer;
+    }
+
+    .btn-send:hover {
+      opacity: .85;
+    }
+  </style>
+</head>
+
+<body>
+
+  <!-- HEADER -->
+  <header>
+    <div class="header-left">
+      <div class="header-logo">🌱</div>
+      <div class="header-title">
+        <h1>Irigasi Pintar</h1>
+        <p>Smart Irrigation Dashboard — ESP32 + FreeRTOS</p>
+      </div>
+    </div>
+    <div class="conn-badge" onclick="openModal()" title="Klik untuk setting MQTT">
+      <div class="led led-broker off" id="ledBroker"></div>
+      <span id="connLabel">Belum terhubung</span>
+    </div>
+  </header>
+
+  <!-- STATUS BAR — indikator koneksi 3 level -->
+  <div class="status-bar">
+    <div class="sb-item">
+      <div class="led led-wifi off" id="ledWifi"></div>
+      <span>WiFi ESP32: <strong id="sbWifi">—</strong></span>
+    </div>
+    <div class="sb-item">
+      <div class="led led-broker off" id="ledBroker2"></div>
+      <span>Broker MQTT: <strong id="sbBroker">Terputus</strong></span>
+    </div>
+    <div class="sb-item">
+      <div class="led led-esp off" id="ledEsp"></div>
+      <span>Data ESP32: <strong id="sbEsp">Menunggu…</strong></span>
+    </div>
+    <div class="sb-item" style="margin-left:auto">
+      <span id="sbLastMsg" style="font-size:.72rem;color:#6a5a50">—</span>
+    </div>
+  </div>
+
+  <main>
+    <!-- Moisture Card -->
+    <div class="card" id="card-moisture">
+      <div class="card-label">Kelembaban Tanah</div>
+      <div class="moisture-main">
+        <div class="gauge-wrap">
+          <svg viewBox="0 0 100 100">
+            <circle class="gauge-track" cx="50" cy="50" r="40" />
+            <circle class="gauge-fill" cx="50" cy="50" r="40" id="gaugeFill" />
+          </svg>
+          <div class="gauge-text">
+            <span class="gauge-pct" id="gaugePct">—</span>
+            <span class="gauge-unit">%</span>
+          </div>
+        </div>
+        <div>
+          <div class="moisture-adc">ADC mentah: <strong id="adcVal">—</strong></div>
+          <div class="soil-badge lembab" id="soilBadge">Menunggu data…</div>
+        </div>
+      </div>
+      <div class="bar-wrap">
+        <div class="bar-fill" id="barFill"></div>
+      </div>
+      <div class="bar-labels"><span>Kering</span><span>Lembab</span><span>Basah</span></div>
+      <div class="last-update" id="lastUpdate">Belum ada data</div>
+    </div>
+
+    <!-- Pump Card -->
+    <div class="card" id="card-pump">
+      <div class="card-label">Kontrol Pompa</div>
+      <div class="mode-strip auto" id="modeStrip">
+        <div class="mode-dot"></div>
+        <span id="modeText">Mode: Otomatis</span>
+      </div>
+      <div class="pump-status">
+        <div class="pump-icon off" id="pumpIcon">💧</div>
+        <div>
+          <div class="pump-state-label off" id="pumpStateLabel">OFF</div>
+          <div class="pump-timer" id="pumpTimer"></div>
+        </div>
+      </div>
+      <div class="pump-controls">
+        <button class="btn btn-on" onclick="sendControl('ON')" id="btnOn" disabled>Nyalakan</button>
+        <button class="btn btn-off" onclick="sendControl('OFF')" id="btnOff" disabled>Matikan</button>
+        <button class="btn btn-auto" onclick="sendControl('AUTO')" id="btnAuto" disabled>Otomatis</button>
+      </div>
+      <p class="pump-hint">
+        <strong>Nyalakan</strong> = paksa ON &nbsp;·&nbsp;
+        <strong>Matikan</strong> = dikunci mati, tidak auto-nyala &nbsp;·&nbsp;
+        <strong>Otomatis</strong> = ikuti sensor
+      </p>
+    </div>
+
+    <!-- Chart Card -->
+    <div class="card" id="card-chart">
+      <div class="chart-header">
+        <div class="card-label" style="margin-bottom:0">Riwayat Kelembaban</div>
+        <div style="display:flex;align-items:center;gap:12px">
+          <div class="chart-legend">
+            <div class="legend-item">
+              <div class="legend-dot" style="background:#4a7c59"></div>Kelembaban %
+            </div>
+            <div class="legend-item">
+              <div class="legend-dot" style="background:#3a86c8"></div>Pompa ON
+            </div>
+          </div>
+          <button class="btn-clear" onclick="clearChart()">Hapus</button>
+        </div>
+      </div>
+      <canvas id="moistureChart" height="110"></canvas>
+    </div>
+  </main>
+
+  <!-- Modal MQTT Settings -->
+  <div class="modal-overlay" id="modalOverlay">
+    <div class="modal">
+      <h2>⚙️ Pengaturan MQTT Broker</h2>
+      <div class="modal-grid">
+        <div class="field full">
+          <label>Broker Host</label>
+          <input type="text" id="mHost" value="smart-irrigation-system.cloud.shiftr.io">
+        </div>
+        <div class="field">
+          <label>WebSocket Port</label>
+          <input type="number" id="mPort" value="443">
+        </div>
+        <div class="field">
+          <label>Path</label>
+          <input type="text" id="mPath" value="/mqtt">
+        </div>
+        <div class="field">
+          <label>Username</label>
+          <input type="text" id="mUser" value="smart-irrigation-system">
+        </div>
+        <div class="field">
+          <label>Password</label>
+          <input type="password" id="mPass" value="2TnGUiGgmfpPnVod">
+        </div>
+      </div>
+      <div class="info-box">
+        💡 Browser pakai <strong>WebSocket (WSS)</strong>, bukan TCP biasa.<br>
+        Shiftr.io → port <code>443</code>, path <code>/mqtt</code>.<br>
+        Mosquitto lokal → port <code>9001</code>, path <code>/</code>.
+      </div>
+      <div class="modal-actions">
+        <button class="btn-cancel" onclick="closeModal()">Batal</button>
+        <button class="btn-send" onclick="applySettings()">Hubungkan</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="toast"></div>
+
+  <script>
+    // ══════════════════════════════════════════════
+    // CONFIG
+    // ══════════════════════════════════════════════
+    let mqttConfig = {
+      host: 'smart-irrigation-system.cloud.shiftr.io',
+      port: 443,
+      path: '/mqtt',
+      useSSL: true,
+      username: 'smart-irrigation-system',
+      password: '2TnGUiGgmfpPnVod',
+      clientId: 'web-irr-' + Math.random().toString(16).slice(2, 8),
+    };
+
+    const TOPICS = {
+      sensor: 'irrigation/sensor',
+      status: 'irrigation/status',
+      alert: 'irrigation/alert',
+      control: 'irrigation/control',
+    };
+
+    // ══════════════════════════════════════════════
+    // STATE
+    // ══════════════════════════════════════════════
+    let client = null;
+    let pumpIsOn = false;
+    let pumpOnStart = null;
+    let timerHandle = null;
+    let espOnline = false;      // true setelah data pertama dari ESP32 diterima
+    let espTimeout = null;       // reset jika tidak ada data 15 detik
+
+    // ══════════════════════════════════════════════
+    // CHART
+    // ══════════════════════════════════════════════
+    const MAX_POINTS = 60;
+    const cData = { labels: [], moisture: [], pump: [] };
+    const ctx = document.getElementById('moistureChart').getContext('2d');
+    const chart = new Chart(ctx, {
+      type: 'line',
+      data: {
+        labels: cData.labels,
+        datasets: [
+          {
+            label: 'Kelembaban (%)', data: cData.moisture,
+            borderColor: '#4a7c59', backgroundColor: 'rgba(74,124,89,.12)',
+            fill: true, tension: 0.4, pointRadius: 2, borderWidth: 2, yAxisID: 'y'
+          },
+          {
+            label: 'Pompa ON', data: cData.pump,
+            borderColor: '#3a86c8', backgroundColor: 'rgba(58,134,200,.15)',
+            fill: true, tension: 0, pointRadius: 0, borderWidth: 1.5,
+            stepped: true, yAxisID: 'y2'
+          }
+        ]
+      },
+      options: {
+        responsive: true,
+        interaction: { mode: 'index', intersect: false },
+        plugins: { legend: { display: false } },
+        scales: {
+          x: { ticks: { maxTicksLimit: 10, font: { size: 11 } }, grid: { color: 'rgba(0,0,0,.05)' } },
+          y: { min: 0, max: 100, ticks: { callback: v => v + '%', font: { size: 11 } }, grid: { color: 'rgba(0,0,0,.05)' } },
+          y2: { position: 'right', min: 0, max: 1, ticks: { callback: v => v === 1 ? 'ON' : 'OFF', font: { size: 11 } }, grid: { display: false } }
+        }
+      }
+    });
+
+    function pushChart(pct, on) {
+      const t = new Date().toLocaleTimeString('id-ID');
+      cData.labels.push(t); cData.moisture.push(pct); cData.pump.push(on ? 1 : 0);
+      if (cData.labels.length > MAX_POINTS) { cData.labels.shift(); cData.moisture.shift(); cData.pump.shift(); }
+      chart.update('quiet');
+    }
+    function clearChart() {
+      cData.labels.length = cData.moisture.length = cData.pump.length = 0;
+      chart.update(); showToast('Riwayat grafik dihapus.');
+    }
+
+    // ══════════════════════════════════════════════
+    // MQTT
+    // ══════════════════════════════════════════════
+    function connectMQTT() {
+      if (client) { try { client.end(true); } catch (e) { } client = null; }
+      setBrokerState('connecting');
+
+      const url = (mqttConfig.useSSL ? 'wss' : 'ws')
+        + '://' + mqttConfig.host + ':' + mqttConfig.port + mqttConfig.path;
+      const opts = {
+        clientId: mqttConfig.clientId,
+        keepalive: 60, reconnectPeriod: 5000, connectTimeout: 10000,
+      };
+      if (mqttConfig.username) { opts.username = mqttConfig.username; opts.password = mqttConfig.password; }
+
+      try { client = mqtt.connect(url, opts); }
+      catch (e) { setBrokerState('off'); showToast('Gagal konek: ' + e.message); return; }
+
+      client.on('connect', () => {
+        setBrokerState('on');
+        client.subscribe(Object.values(TOPICS));
+        showToast('Terhubung ke broker MQTT ✓');
+        setControlsEnabled(true);
+      });
+
+      client.on('message', (topic, payload) => handleMessage(topic, payload.toString()));
+
+      client.on('disconnect', () => { setBrokerState('off'); setControlsEnabled(false); setEspState(false); });
+      client.on('error', () => { setBrokerState('off'); setControlsEnabled(false); });
+      client.on('offline', () => { setBrokerState('off'); setControlsEnabled(false); setEspState(false); });
+      client.on('reconnect', () => { setBrokerState('connecting'); });
+    }
+
+    // ══════════════════════════════════════════════
+    // HANDLE MESSAGE
+    // ══════════════════════════════════════════════
+    function handleMessage(topic, msg) {
+      if (topic === TOPICS.sensor) {
+        try {
+          const d = JSON.parse(msg);
+          updateMoistureUI(d.moisture_pct, d.moisture_raw, d.soil_status);
+          if (d.mode) updateModeUI(d.mode.toLowerCase());
+          updatePumpUI(d.pump_state === 'ON');
+          pushChart(d.moisture_pct, d.pump_state === 'ON');
+
+          // Tandai ESP32 online
+          setEspState(true);
+
+          // Update status bar
+          document.getElementById('sbLastMsg').textContent =
+            'Pesan terakhir: ' + new Date().toLocaleTimeString('id-ID');
+
+        } catch (e) { /* skip */ }
+      }
+
+      if (topic === TOPICS.status) {
+        const isOnline = msg === 'ONLINE';
+        const isOn = msg.startsWith('ON');
+
+        if (isOnline) {
+          // ESP32 baru konek ke broker
+          setEspState(true);
+          showToast('ESP32 terhubung ke broker! 🎉');
+        }
+        updatePumpUI(isOn);
+      }
+
+      if (topic === TOPICS.alert) {
+        showToast('⚠️ ' + msg, 5000);
+      }
+    }
+
+    // ══════════════════════════════════════════════
+    // STATUS BAR UPDATERS
+    // ══════════════════════════════════════════════
+    function setBrokerState(state) {
+      // state: 'on' | 'off' | 'connecting'
+      const dot1 = document.getElementById('ledBroker');
+      const dot2 = document.getElementById('ledBroker2');
+      const label = document.getElementById('connLabel');
+      const sb = document.getElementById('sbBroker');
+
+      const cls = state === 'on' ? 'led led-broker on' :
+        state === 'connecting' ? 'led led-broker off' : 'led led-broker off';
+
+      dot1.className = cls;
+      dot2.className = cls;
+
+      if (state === 'on') {
+        dot1.style.background = '#ff9800';
+        dot1.style.boxShadow = '0 0 7px #ff9800';
+        dot2.style.background = '#ff9800';
+        dot2.style.boxShadow = '0 0 7px #ff9800';
+        label.textContent = 'Terhubung';
+        sb.textContent = 'Terhubung';
+      } else if (state === 'connecting') {
+        dot1.style.background = '#888'; dot1.style.boxShadow = 'none';
+        dot2.style.background = '#888'; dot2.style.boxShadow = 'none';
+        dot1.style.animation = 'blink 1s infinite';
+        dot2.style.animation = 'blink 1s infinite';
+        label.textContent = 'Menghubungkan…';
+        sb.textContent = 'Menghubungkan…';
+      } else {
+        dot1.style.background = '#555'; dot1.style.boxShadow = 'none';
+        dot2.style.background = '#555'; dot2.style.boxShadow = 'none';
+        dot1.style.animation = '';
+        dot2.style.animation = '';
+        label.textContent = 'Terputus';
+        sb.textContent = 'Terputus';
+      }
+    }
+
+    function setEspState(online) {
+      espOnline = online;
+      const led = document.getElementById('ledEsp');
+      const sb = document.getElementById('sbEsp');
+      const sbWifi = document.getElementById('sbWifi');
+      const ledWifi = document.getElementById('ledWifi');
+
+      if (online) {
+        led.className = 'led led-esp on';
+        // Animasi pulse sekali tiap data datang
+        led.classList.remove('pulse');
+        void led.offsetWidth; // reflow trick
+        led.classList.add('pulse');
+
+        sb.textContent = 'Online ✓';
+        sbWifi.textContent = 'Terhubung';
+        ledWifi.className = 'led led-wifi on';
+
+        // Set timeout: jika 15 detik tidak ada data, anggap ESP offline
+        clearTimeout(espTimeout);
+        espTimeout = setTimeout(() => {
+          led.className = 'led led-esp off';
+          sb.textContent = 'Tidak ada data (>15 detik)';
+          sbWifi.textContent = '—';
+          ledWifi.className = 'led led-wifi off';
+        }, 15000);
+      } else {
+        led.className = 'led led-esp off';
+        sb.textContent = 'Offline';
+        sbWifi.textContent = '—';
+        ledWifi.className = 'led led-wifi off';
+      }
+    }
+
+    // ══════════════════════════════════════════════
+    // UI UPDATERS
+    // ══════════════════════════════════════════════
+    function updateMoistureUI(pct, adc, soilStatus) {
+      const C = 2 * Math.PI * 40;
+      const fill = document.getElementById('gaugeFill');
+      fill.style.strokeDashoffset = C - (pct / 100) * C;
+      fill.style.stroke = pct >= 60 ? '#3a86c8' : pct >= 35 ? '#4a7c59' : '#c0622a';
+
+      document.getElementById('gaugePct').textContent = pct;
+      document.getElementById('adcVal').textContent = adc ?? '—';
+      document.getElementById('barFill').style.width = pct + '%';
+
+      const badge = document.getElementById('soilBadge');
+      const s = (soilStatus || '').toLowerCase();
+      badge.className = 'soil-badge ' + (s.includes('basah') ? 'basah' : s.includes('kering') ? 'kering' : 'lembab');
+      badge.textContent = soilStatus || (pct >= 60 ? 'BASAH' : pct >= 35 ? 'LEMBAB' : 'KERING');
+
+      document.getElementById('lastUpdate').textContent = 'Update: ' + new Date().toLocaleTimeString('id-ID');
+    }
+
+    function updateModeUI(mode) {
+      // mode: 'auto' | 'manual_on' | 'manual_off'
+      const strip = document.getElementById('modeStrip');
+      const text = document.getElementById('modeText');
+      strip.className = 'mode-strip';
+      if (mode === 'manual_on') {
+        strip.classList.add('man-on');
+        text.textContent = 'Mode: Manual ON — sensor diabaikan';
+      } else if (mode === 'manual_off') {
+        strip.classList.add('man-off');
+        text.textContent = 'Mode: Manual OFF — pompa dikunci mati';
+      } else {
+        strip.classList.add('auto');
+        text.textContent = 'Mode: Otomatis — ikuti sensor';
+      }
+    }
+
+    function updatePumpUI(isOn) {
+      pumpIsOn = isOn;
+      document.getElementById('pumpIcon').className = 'pump-icon ' + (isOn ? 'on' : 'off');
+      const lbl = document.getElementById('pumpStateLabel');
+      lbl.className = 'pump-state-label ' + (isOn ? 'on' : 'off');
+      lbl.textContent = isOn ? 'ON' : 'OFF';
+
+      if (isOn) {
+        if (!pumpOnStart) pumpOnStart = Date.now();
+        startTimer();
+      } else {
+        pumpOnStart = null;
+        stopTimer();
+        document.getElementById('pumpTimer').textContent = '';
+      }
+    }
+
+    function startTimer() {
+      stopTimer();
+      timerHandle = setInterval(() => {
+        if (!pumpIsOn || !pumpOnStart) return;
+        const s = Math.floor((Date.now() - pumpOnStart) / 1000);
+        document.getElementById('pumpTimer').textContent =
+          'Menyala: ' + String(Math.floor(s / 60)).padStart(2, '0') + ':' + String(s % 60).padStart(2, '0');
+      }, 1000);
+    }
+    function stopTimer() { if (timerHandle) { clearInterval(timerHandle); timerHandle = null; } }
+
+    // ══════════════════════════════════════════════
+    // PUBLISH
+    // ══════════════════════════════════════════════
+    function sendControl(cmd) {
+      if (!client || !client.connected) { showToast('Belum terhubung ke broker.'); return; }
+      client.publish(TOPICS.control, cmd, { qos: 1 });
+      const labels = { ON: 'Pompa dipaksa ON', OFF: 'Pompa dikunci mati', AUTO: 'Kembali ke mode otomatis' };
+      showToast(labels[cmd] || cmd);
+    }
+
+    // ══════════════════════════════════════════════
+    // HELPERS
+    // ══════════════════════════════════════════════
+    function setControlsEnabled(en) {
+      ['btnOn', 'btnOff', 'btnAuto'].forEach(id => document.getElementById(id).disabled = !en);
+    }
+
+    let toastTimer = null;
+    function showToast(msg, dur = 3000) {
+      const t = document.getElementById('toast');
+      t.textContent = msg; t.classList.add('show');
+      if (toastTimer) clearTimeout(toastTimer);
+      toastTimer = setTimeout(() => t.classList.remove('show'), dur);
+    }
+
+    function openModal() {
+      document.getElementById('mHost').value = mqttConfig.host;
+      document.getElementById('mPort').value = mqttConfig.port;
+      document.getElementById('mPath').value = mqttConfig.path;
+      document.getElementById('mUser').value = mqttConfig.username;
+      document.getElementById('mPass').value = mqttConfig.password;
+      document.getElementById('modalOverlay').classList.add('open');
+    }
+    function closeModal() { document.getElementById('modalOverlay').classList.remove('open'); }
+
+    function applySettings() {
+      const host = document.getElementById('mHost').value.trim();
+      const port = parseInt(document.getElementById('mPort').value);
+      if (!host || isNaN(port)) { showToast('Host dan port wajib diisi.'); return; }
+      mqttConfig.host = host;
+      mqttConfig.port = port;
+      mqttConfig.path = document.getElementById('mPath').value.trim() || '/mqtt';
+      mqttConfig.useSSL = port === 443 || port === 8884;
+      mqttConfig.username = document.getElementById('mUser').value.trim();
+      mqttConfig.password = document.getElementById('mPass').value;
+      closeModal();
+      connectMQTT();
+    }
+
+    document.getElementById('modalOverlay').addEventListener('click', e => {
+      if (e.target === document.getElementById('modalOverlay')) closeModal();
+    });
+
+    // Auto-connect saat halaman dimuat
+    window.addEventListener('load', () => {
+      setBrokerState('off');
+      setEspState(false);
+      connectMQTT();
+    });
+  </script>
+</body>
+
+</html>
