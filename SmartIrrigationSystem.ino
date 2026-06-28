@@ -7,6 +7,8 @@
 // ============================================================
 #define SENSOR_PIN   35
 #define RELAY_PIN    14
+#define TRIG_PIN     18   // HC-SR04 Trigger
+#define ECHO_PIN     19   // HC-SR04 Echo (gunakan voltage divider 5V->3.3V!)
 
 // ============================================================
 // KONFIGURASI WiFi
@@ -39,12 +41,17 @@ const unsigned long READ_INTERVAL_MS = 2000;  // Baca sensor tiap 2 detik
 const unsigned long PUB_INTERVAL_MS  = 5000;  // Publish MQTT tiap 5 detik
 
 // ============================================================
+// KONFIGURASI TANGKI AIR (HC-SR04)
+// ============================================================
+const float TANK_HEIGHT_CM      = 50.0; // Tinggi tangki (jarak sensor ke dasar tangki, cm)
+const float SENSOR_OFFSET_CM    = 2.0;  // Jarak sensor ke permukaan air saat tangki PENUH (cm)
+const float TANK_EMPTY_PERCENT  = 10.0; // % di bawah ini dianggap KOSONG -> pompa dikunci mati
+const int   ULTRASONIC_SAMPLES  = 3;    // Jumlah sampel untuk dirata-rata (filter noise)
+
+// ============================================================
 // MODE KONTROL POMPA
 // ============================================================
 // Tiga mode eksklusif:
-//   MODE_AUTO      = sensor menentukan pompa ON/OFF
-//   MODE_MANUAL_ON = pompa dipaksa ON, sensor diabaikan
-//   MODE_MANUAL_OFF= pompa dipaksa OFF, sensor diabaikan (tidak akan auto-nyala!)
 typedef enum { MODE_AUTO, MODE_MANUAL_ON, MODE_MANUAL_OFF } PumpMode;
 PumpMode pumpMode = MODE_AUTO;
 
@@ -57,6 +64,12 @@ unsigned long lastReadTime    = 0;
 unsigned long lastPubTime     = 0;
 int           moistureRaw     = 0;
 int           moisturePercent = 0;
+
+// Level air tangki
+float         waterDistanceCm = -1;    // jarak sensor->permukaan air (cm), -1 = belum/gagal baca
+int            waterLevelPercent = 0;  // 0-100% penuh
+bool          tankEmpty       = false; // true jika level <= TANK_EMPTY_PERCENT
+bool          tankEmptyAlertSent = false;
 
 WiFiClient   espClient;
 PubSubClient mqttClient(espClient);
@@ -153,7 +166,7 @@ void publishSensorData() {
   else if (pumpMode == MODE_MANUAL_OFF) modeStr = "MANUAL_OFF";
   else                                   modeStr = "AUTO";
 
-  StaticJsonDocument<256> doc;
+  StaticJsonDocument<320> doc;
   doc["moisture_raw"] = moistureRaw;
   doc["moisture_pct"] = moisturePercent;
   doc["pump_state"]   = pumpState ? "ON" : "OFF";
@@ -163,9 +176,14 @@ void publishSensorData() {
   else if (moisturePercent >= 35) doc["soil_status"] = "LEMBAB";
   else                             doc["soil_status"] = "KERING";
 
-  doc["pump_on_sec"] = pumpState ? (millis() - pumpStartTime) / 1000 : 0;
+  doc["pump_on_sec"]      = pumpState ? (millis() - pumpStartTime) / 1000 : 0;
 
-  char payload[256];
+  // Data level air tangki
+  doc["water_level_pct"] = waterLevelPercent;
+  doc["water_distance_cm"] = waterDistanceCm;
+  doc["tank_empty"]       = tankEmpty;
+
+  char payload[320];
   serializeJson(doc, payload);
   mqttClient.publish(TOPIC_SENSOR, payload);
   Serial.printf("[MQTT] Publish: %s\n", payload);
@@ -182,10 +200,67 @@ void readSensor() {
 }
 
 // ============================================================
+// Sensor Level Air (HC-SR04)
+// ============================================================
+// Mengembalikan jarak dalam cm, atau -1 jika gagal/tidak ada pantulan (timeout)
+float readUltrasonicCm() {
+  digitalWrite(TRIG_PIN, LOW);
+  delayMicroseconds(2);
+  digitalWrite(TRIG_PIN, HIGH);
+  delayMicroseconds(10);
+  digitalWrite(TRIG_PIN, LOW);
+
+  // Timeout 25ms (~430cm) supaya loop tidak macet jika tidak ada echo
+  unsigned long duration = pulseIn(ECHO_PIN, HIGH, 25000UL);
+  if (duration == 0) return -1; // timeout / tidak ada pantulan
+
+  float distanceCm = duration * 0.0343f / 2.0f;
+  return distanceCm;
+}
+
+void readWaterLevel() {
+  float sum = 0;
+  int   validCount = 0;
+
+  for (int i = 0; i < ULTRASONIC_SAMPLES; i++) {
+    float d = readUltrasonicCm();
+    if (d > 0) { sum += d; validCount++; }
+    delay(30); // jeda antar tembakan agar tidak saling interferensi
+  }
+
+  if (validCount == 0) {
+    Serial.println("[ULTRASONIC] Gagal baca (timeout) - cek wiring/sensor.");
+    return;
+  }
+
+  waterDistanceCm = sum / validCount;
+
+  // Jarak efektif dari permukaan air ke dasar tangki (memperhitungkan offset sensor)
+  float usableHeight = TANK_HEIGHT_CM - SENSOR_OFFSET_CM;
+  float waterHeight   = (TANK_HEIGHT_CM - waterDistanceCm) - SENSOR_OFFSET_CM;
+  waterHeight = constrain(waterHeight, 0, usableHeight);
+
+  waterLevelPercent = (usableHeight > 0) ? (int)((waterHeight / usableHeight) * 100.0f) : 0;
+  waterLevelPercent = constrain(waterLevelPercent, 0, 100);
+
+  bool wasEmpty = tankEmpty;
+  tankEmpty = (waterLevelPercent <= TANK_EMPTY_PERCENT);
+
+  // Reset flag alert begitu air sudah naik lagi di atas ambang kosong
+  if (wasEmpty && !tankEmpty) tankEmptyAlertSent = false;
+}
+
+// ============================================================
 // Pompa
 // ============================================================
 void pumpOn(bool publishNow) {
   if (pumpState) return;
+  if (tankEmpty) {
+    Serial.println("[PROTEKSI] Permintaan pompa ON ditolak - tangki air kosong!");
+    if (publishNow && mqttClient.connected())
+      mqttClient.publish(TOPIC_ALERT, "PUMP_BLOCKED - tangki kosong, pompa tidak dinyalakan");
+    return;
+  }
   digitalWrite(RELAY_PIN, LOW);
   pumpState     = true;
   pumpStartTime = millis();
@@ -210,6 +285,18 @@ void pumpOff(bool publishNow) {
 // Logika kontrol irigasi
 // ============================================================
 void controlIrrigation() {
+  if (tankEmpty) {
+    if (pumpState) {
+      pumpOff();
+      Serial.println("[PROTEKSI] Tangki air kosong! Pompa dimatikan paksa.");
+    }
+    if (!tankEmptyAlertSent && mqttClient.connected()) {
+      mqttClient.publish(TOPIC_ALERT, "TANK_EMPTY - pompa dikunci mati sampai air terisi kembali");
+      tankEmptyAlertSent = true;
+    }
+    return; // jangan lanjutkan logika mode apapun selama tangki kosong
+  }
+
   // MODE_MANUAL_OFF: pompa dikunci mati, sensor tidak bisa nyalakan
   if (pumpMode == MODE_MANUAL_OFF) {
     if (pumpState) pumpOff();  // pastikan tetap mati
@@ -262,6 +349,12 @@ void printStatus() {
   if      (moisturePercent >= 60) Serial.println("Tanah        : BASAH");
   else if (moisturePercent >= 35) Serial.println("Tanah        : LEMBAB");
   else                             Serial.println("Tanah        : KERING");
+
+  if (waterDistanceCm > 0)
+    Serial.printf("Jarak Air    : %.1f cm\n", waterDistanceCm);
+  else
+    Serial.println("Jarak Air    : gagal baca (cek wiring)");
+  Serial.printf("Level Air    : %d%%%s\n", waterLevelPercent, tankEmpty ? "  [TANGKI KOSONG - POMPA DIKUNCI]" : "");
 }
 
 // ============================================================
@@ -275,12 +368,17 @@ void setup() {
   digitalWrite(RELAY_PIN, HIGH);  // Pompa MATI saat awal
   analogSetAttenuation(ADC_11db);
 
+  pinMode(TRIG_PIN, OUTPUT);
+  pinMode(ECHO_PIN, INPUT);
+  digitalWrite(TRIG_PIN, LOW);
+
   Serial.println("==================================");
   Serial.println(" Smart Irrigation System - ESP32  ");
   Serial.println("==================================");
   Serial.printf("Threshold DRY : %d\n", THRESHOLD_DRY);
   Serial.printf("Threshold WET : %d\n", THRESHOLD_WET);
   Serial.printf("Max pompa ON  : %lu ms\n", MAX_PUMP_ON_MS);
+  Serial.printf("Tinggi tangki : %.1f cm (ambang kosong: %.0f%%)\n", TANK_HEIGHT_CM, TANK_EMPTY_PERCENT);
 
   connectWiFi();
 
@@ -288,6 +386,7 @@ void setup() {
   mqttClient.setCallback(mqttCallback);
   mqttClient.setKeepAlive(60);
   connectMQTT();
+  readWaterLevel();
 
   Serial.println("----------------------------------");
 }
@@ -305,6 +404,7 @@ void loop() {
   if (now - lastReadTime >= READ_INTERVAL_MS) {
     lastReadTime = now;
     readSensor();
+    readWaterLevel();
     controlIrrigation();
     printStatus();
   }

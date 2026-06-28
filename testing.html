@@ -192,14 +192,26 @@
       padding: 22px 20px;
       display: grid;
       gap: 18px;
-      grid-template-columns: 1fr 1fr;
-      grid-template-areas: "moisture pump" "chart chart";
+      grid-template-columns: 1fr 1fr 1fr;
+      grid-template-areas:
+        "moisture pump tank"
+        "chart chart chart";
+    }
+
+    @media(max-width:900px) {
+      main {
+        grid-template-columns: 1fr 1fr;
+        grid-template-areas:
+          "moisture pump"
+          "tank tank"
+          "chart chart";
+      }
     }
 
     @media(max-width:660px) {
       main {
         grid-template-columns: 1fr;
-        grid-template-areas: "moisture" "pump" "chart";
+        grid-template-areas: "moisture" "pump" "tank" "chart";
       }
     }
 
@@ -341,6 +353,110 @@
       color: var(--muted);
       margin-top: 10px;
       text-align: right;
+    }
+
+    /* ── WATER TANK CARD ────────────────────── */
+    #card-tank {
+      grid-area: tank;
+    }
+
+    .tank-main {
+      display: flex;
+      align-items: center;
+      gap: 18px;
+      margin-bottom: 16px;
+    }
+
+    .tank-visual {
+      position: relative;
+      width: 64px;
+      height: 96px;
+      flex-shrink: 0;
+      border: 2.5px solid var(--soil);
+      border-radius: 6px 6px 10px 10px;
+      overflow: hidden;
+      background: #fbfaf8;
+    }
+
+    .tank-fill {
+      position: absolute;
+      bottom: 0;
+      left: 0;
+      width: 100%;
+      height: 0%;
+      background: linear-gradient(180deg, #5aa3dd, var(--water));
+      transition: height .8s ease, background .5s;
+    }
+
+    .tank-fill.low {
+      background: linear-gradient(180deg, #e0936b, var(--dry));
+    }
+
+    .tank-fill::before {
+      content: "";
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 4px;
+      background: rgba(255, 255, 255, .35);
+    }
+
+    .tank-pct {
+      font-size: 1.5rem;
+      font-weight: 800;
+      line-height: 1;
+    }
+
+    .tank-distance {
+      font-size: .8rem;
+      color: var(--muted);
+      margin-bottom: 7px;
+    }
+
+    .water-badge {
+      display: inline-block;
+      padding: 4px 12px;
+      border-radius: 20px;
+      font-size: .76rem;
+      font-weight: 700;
+    }
+
+    .water-badge.penuh {
+      background: #e3f2fd;
+      color: var(--water);
+    }
+
+    .water-badge.sedang {
+      background: #e8f5e9;
+      color: #2e7d32;
+    }
+
+    .water-badge.rendah {
+      background: #fff3e0;
+      color: #e08020;
+    }
+
+    .water-badge.kosong {
+      background: #fbe9e7;
+      color: var(--dry);
+    }
+
+    .tank-empty-alert {
+      display: none;
+      align-items: center;
+      gap: 8px;
+      background: #fbe9e7;
+      color: var(--dry);
+      padding: 9px 12px;
+      border-radius: 8px;
+      font-size: .8rem;
+      font-weight: 700;
+      margin-top: 12px;
+    }
+
+    .tank-empty-alert.show {
+      display: flex;
     }
 
     /* ── PUMP CARD ──────────────────────────── */
@@ -778,6 +894,29 @@
       </p>
     </div>
 
+    <!-- Water Tank Card -->
+    <div class="card" id="card-tank">
+      <div class="card-label">Level Air Tangki</div>
+      <div class="tank-main">
+        <div class="tank-visual">
+          <div class="tank-fill" id="tankFill"></div>
+        </div>
+        <div>
+          <div class="tank-pct" id="tankPct">—<span style="font-size:.9rem;font-weight:700">%</span></div>
+          <div class="tank-distance">Jarak ke air: <strong id="tankDistance">—</strong> cm</div>
+          <div class="water-badge sedang" id="waterBadge">Menunggu data…</div>
+        </div>
+      </div>
+      <div class="bar-wrap">
+        <div class="bar-fill" id="tankBarFill"></div>
+      </div>
+      <div class="bar-labels"><span>Kosong</span><span>Sedang</span><span>Penuh</span></div>
+      <div class="tank-empty-alert" id="tankEmptyAlert">
+        🚱 Tangki kosong — pompa dikunci mati
+      </div>
+      <div class="last-update" id="tankLastUpdate">Belum ada data</div>
+    </div>
+
     <!-- Chart Card -->
     <div class="card" id="card-chart">
       <div class="chart-header">
@@ -868,6 +1007,7 @@
     let timerHandle = null;
     let espOnline = false;      // true setelah data pertama dari ESP32 diterima
     let espTimeout = null;       // reset jika tidak ada data 15 detik
+    let tankIsEmpty = false;     // status terakhir level air tangki
 
     // ══════════════════════════════════════════════
     // CHART
@@ -960,6 +1100,10 @@
           if (d.mode) updateModeUI(d.mode.toLowerCase());
           updatePumpUI(d.pump_state === 'ON');
           pushChart(d.moisture_pct, d.pump_state === 'ON');
+
+          if (d.water_level_pct !== undefined) {
+            updateTankUI(d.water_level_pct, d.water_distance_cm, d.tank_empty);
+          }
 
           // Tandai ESP32 online
           setEspState(true);
@@ -1083,6 +1227,34 @@
       document.getElementById('lastUpdate').textContent = 'Update: ' + new Date().toLocaleTimeString('id-ID');
     }
 
+    function updateTankUI(pct, distanceCm, isEmpty) {
+      tankIsEmpty = !!isEmpty;
+      pct = Math.max(0, Math.min(100, Math.round(pct)));
+
+      const fill = document.getElementById('tankFill');
+      fill.style.height = pct + '%';
+      fill.classList.toggle('low', pct <= 20);
+
+      document.getElementById('tankPct').innerHTML = pct + '<span style="font-size:.9rem;font-weight:700">%</span>';
+      document.getElementById('tankDistance').textContent =
+        (distanceCm !== undefined && distanceCm !== null && distanceCm > 0) ? distanceCm.toFixed(1) : '—';
+      document.getElementById('tankBarFill').style.width = pct + '%';
+
+      const badge = document.getElementById('waterBadge');
+      let label, cls;
+      if (isEmpty || pct <= 10) { label = 'KOSONG'; cls = 'kosong'; }
+      else if (pct <= 35) { label = 'RENDAH'; cls = 'rendah'; }
+      else if (pct <= 70) { label = 'SEDANG'; cls = 'sedang'; }
+      else { label = 'PENUH'; cls = 'penuh'; }
+      badge.className = 'water-badge ' + cls;
+      badge.textContent = label;
+
+      const alertBox = document.getElementById('tankEmptyAlert');
+      alertBox.classList.toggle('show', !!isEmpty);
+
+      document.getElementById('tankLastUpdate').textContent = 'Update: ' + new Date().toLocaleTimeString('id-ID');
+    }
+
     function updateModeUI(mode) {
       // mode: 'auto' | 'manual_on' | 'manual_off'
       const strip = document.getElementById('modeStrip');
@@ -1135,7 +1307,11 @@
       if (!client || !client.connected) { showToast('Belum terhubung ke broker.'); return; }
       client.publish(TOPICS.control, cmd, { qos: 1 });
       const labels = { ON: 'Pompa dipaksa ON', OFF: 'Pompa dikunci mati', AUTO: 'Kembali ke mode otomatis' };
-      showToast(labels[cmd] || cmd);
+      if (cmd === 'ON' && tankIsEmpty) {
+        showToast('⚠️ Tangki air kosong — ESP32 akan menolak menyalakan pompa.', 4500);
+      } else {
+        showToast(labels[cmd] || cmd);
+      }
     }
 
     // ══════════════════════════════════════════════
